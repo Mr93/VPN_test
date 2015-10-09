@@ -87,7 +87,7 @@ public class LocalVPNService extends VpnService {
     @Override
     public int onStartCommand (Intent intent,int flags,int startId){return START_STICKY;}
 
-    public static boolean isIsRunning(){return isRunning;}
+    public static boolean isRunning(){return isRunning;}
 
     @Override
     public void onDestroy(){
@@ -143,6 +143,64 @@ public class LocalVPNService extends VpnService {
 
             FileChannel vpnInput = new FileInputStream(vpnFireDescriptor).getChannel();
             FileChannel vpnOutput = new FileOutputStream(vpnFireDescriptor).getChannel();
+
+            try {
+                ByteBuffer bufferToNetwork = null;
+                boolean dataSent = true;
+                boolean dataReceived;
+                while (!Thread.interrupted()) {
+                    if (dataSent)
+                        bufferToNetwork = ByteBufferPool.acquire(); //?
+                    else
+                        bufferToNetwork.clear();
+
+                    //ToDo: Block when not connected
+                    int readBytes = vpnInput.read(bufferToNetwork);
+                    if (readBytes > 0) {
+                        dataSent = true;
+                        bufferToNetwork.flip();
+                        Packet packet = new Packet(bufferToNetwork);
+                        if (packet.isUDP()) {
+                            deviceToNetworkUDPQueue.offer(packet);
+                        } else if (packet.isTCP()) {
+                            deviceToNetworkTCPQueue.offer(packet);
+                        } else {
+                            Log.w(TAG, "Unknow packet type");
+                            Log.w(TAG, packet.ip4Header.toString());
+                            dataSent = false;
+                        }
+                    } else {
+                        dataSent = false;
+                    }
+
+                    ByteBuffer bufferFromNetwork = networkToDeviceQueue.poll();//??????????
+                    if (bufferFromNetwork!=null ){
+                        bufferFromNetwork.flip();
+                        while (bufferFromNetwork.hasRemaining())
+                            vpnOutput.write(bufferFromNetwork);
+                        dataReceived=true;
+                        ByteBufferPool.release(bufferFromNetwork);
+                    }
+                    else {
+                        dataReceived = false;
+                    }
+
+                    //Todo: sleep-looping is not very battery-friendly, consider blocking instead
+                    //confirm if throughput with concurrentqueue is really higher compared to blockingqueue
+                    if (!dataSent && !dataReceived) {
+                        Thread.sleep(10);
+                    }
+                }
+            }
+            catch (InterruptedException e){
+                Log.i(TAG,"Stopping");
+            }
+            catch (IOException e){
+                Log.w(TAG,e.toString(),e);
+            }
+            finally {
+                closeResources(vpnInput,vpnOutput);
+            }
 
         }
 
